@@ -1,0 +1,126 @@
+---
+title: "Homework 6"
+author: "Jake Vettoretti"
+date: "2025-11-29"
+output: github_document
+---
+```{r}
+library(broom)
+library(tidyverse)
+library(forcats)
+library(p8105.datasets)
+```
+
+## Problem 1
+
+```{r}
+## Loading the data
+
+homicides <- read_csv("https://raw.githubusercontent.com/washingtonpost/data-homicides/master/homicide-data.csv")
+```
+
+
+# Starting to clean and summarize
+
+```{r}
+homicides_clean =
+  homicides |>
+    mutate(
+      city_state = str_c(city, ", ", state),
+      solved = if_else(disposition == "Closed by arrest", 1, 0),
+      victim_age = as.numeric(victim_age)
+      ) |>
+    filter(
+      !(city_state %in% c("Dallas, TX", "Phoenix, AZ", "Kansas City, MO", "Tulsa, AL")),
+      victim_race %in% c("White", "Black")
+      )
+```
+
+# GLM for Baltimore
+
+```{r}
+# Filter to Baltimore
+baltimore_data =
+  homicides_clean |>
+  filter(city_state == "Baltimore, MD")
+
+# Fit logistic regression
+baltimore_glm =
+  glm(
+    solved ~ victim_age + victim_sex + victim_race,
+    data = baltimore_data,
+    family = binomial
+  )
+
+# Tidy and extract adjusted OR for male vs female
+baltimore_results =
+  broom::tidy(
+    baltimore_glm,
+    exponentiate = TRUE,
+    conf.int = TRUE
+  ) |>
+  filter(term == "victim_sexMale") |>
+  select(term, estimate, conf.low, conf.high)
+
+baltimore_results
+```
+
+# GLM for each city
+
+```{r}
+city_glm_results =
+  homicides_clean |>
+  group_by(city_state) |>
+  nest() |>
+  mutate(
+    fit = map(
+      data,
+      ~ glm(
+        solved ~ victim_age + victim_sex + victim_race,
+        data = .x,
+        family = binomial
+      )
+    ),
+    tidy_fit = map(
+      fit,
+      ~ broom::tidy(
+        .x,
+        exponentiate = TRUE,
+        conf.int = TRUE
+      )
+    )
+  ) |>
+  unnest(tidy_fit) |>
+  filter(term == "victim_sexMale") |>
+  select(city_state, term, estimate, conf.low, conf.high)
+
+city_glm_results
+```
+
+# Plot that shows the estimated ORs and CIs for each city
+
+```{r fig.width=8, fig.height=8}
+city_glm_results |>
+  ggplot(aes(
+    x = estimate,
+    y = fct_reorder(city_state, estimate)
+  )) +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "gray50") +
+  geom_point(size = 2) +
+  geom_errorbar(aes(xmin = conf.low, xmax = conf.high), width = 0.2) +
+  labs(
+    title = "Adjusted Odds of a Homicide Being Solved (Male vs Female Victims)",
+    subtitle = "Logistic regression for each city adjusted for age and race",
+    x = "Adjusted Odds Ratio (Male vs Female)",
+    y = NULL
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.y = element_text(size = 8)
+  )
+
+```
+
+Comments: Most cities show adjusted odds ratios close to one, which means that after accounting for age and race the chance that a homicide is solved is similar for male and female victims. A few cities have odds ratios above one, suggesting higher odds of a solved case among male victims, while others fall below one, suggesting higher odds among female victims. Many cities also have wide confidence intervals, which indicates substantial uncertainty and likely smaller sample sizes. Overall, there is no clear or consistent pattern across cities, and most results suggest little difference in solve rates by victim sex once demographic factors are considered.
+
+
